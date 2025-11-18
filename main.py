@@ -1,8 +1,13 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
+from typing import Any, Dict
 
-app = FastAPI()
+from schemas import ContactSubmission, DemoRequest, ContactResponse
+from database import create_document, db
+
+app = FastAPI(title="CORPEX Informatics API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,56 +19,59 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
-
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+    return {"message": "CORPEX API is running"}
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
+    response: Dict[str, Any] = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
+        "database_url": "❌ Not Set",
+        "database_name": "❌ Not Set",
         "connection_status": "Not Connected",
         "collections": []
     }
-    
+
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
+            response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
+            response["database_name"] = getattr(db, 'name', None) or ("✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set")
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = db.list_collection_names()[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
+                response["database"] = f"⚠️  Connected but Error: {str(e)[:80]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
+        response["database"] = f"❌ Error: {str(e)[:80]}"
+
     return response
 
+@app.post("/contact", response_model=ContactResponse)
+def submit_contact(payload: ContactSubmission):
+    try:
+        # Insert into "contactsubmission" collection by convention (lowercase class name)
+        collection = ContactSubmission.__name__.lower()
+        inserted_id = create_document(collection, payload)
+        return ContactResponse(success=True, id=inserted_id, message="Thanks! We will get back to you shortly.")
+    except ValidationError as ve:
+        raise HTTPException(status_code=422, detail=ve.errors())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/demo-request", response_model=ContactResponse)
+def submit_demo_request(payload: DemoRequest):
+    try:
+        collection = DemoRequest.__name__.lower()
+        inserted_id = create_document(collection, payload)
+        return ContactResponse(success=True, id=inserted_id, message="Demo request received. We will contact you to schedule.")
+    except ValidationError as ve:
+        raise HTTPException(status_code=422, detail=ve.errors())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
